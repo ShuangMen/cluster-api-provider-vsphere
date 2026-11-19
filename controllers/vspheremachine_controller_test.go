@@ -213,6 +213,11 @@ var _ = Describe("VsphereMachineReconciler", func() {
 		owner.Spec.Version = "test-version"
 		owner.Spec.Bootstrap.DataSecretName = ptr.To("bootstrap-data")
 		owner.Labels[clusterv1.MachineControlPlaneLabel] = ""
+		owner.Status.NodeRef = clusterv1.MachineNodeReference{Name: "test-host"}
+		conditions.Set(owner, metav1.Condition{
+			Type: clusterv1.MachineNodeReadyCondition, Status: metav1.ConditionFalse,
+			Reason: clusterv1.MachineNodeNotReadyReason,
+		})
 		vm := &vmoprv1alpha5.VirtualMachine{
 			ObjectMeta: metav1.ObjectMeta{Name: owner.Name + "-vm", Namespace: testNs.Name},
 			Spec:       vmoprv1alpha5.VirtualMachineSpec{PowerState: vmoprv1alpha5.VirtualMachinePowerStateOff},
@@ -262,14 +267,14 @@ var _ = Describe("VsphereMachineReconciler", func() {
 		Expect(conditions.GetReason(supervisorMachine, infrav1.VSphereMachineReadyCondition)).To(Equal(vmwarev1.VSphereMachineHostMaintenanceReason))
 		Expect(conditions.IsTrue(supervisorMachine, infrav1.VSphereMachineVirtualMachineProvisionedCondition)).To(BeTrue())
 
-		By("using the normal Ready summary when VM reconciliation is skipped")
+		By("keeping Ready false while the Node is not Ready after maintenance")
 		Expect(baseClient.Get(ctx, client.ObjectKeyFromObject(owner), owner)).To(Succeed())
 		owner.Spec.Bootstrap.DataSecretName = nil
 		Expect(baseClient.Update(ctx, owner)).To(Succeed())
 		vmReads = 0
 		reconcileAndRefresh()
 		Expect(vmReads).To(Equal(0))
-		Expect(conditions.GetReason(supervisorMachine, infrav1.VSphereMachineReadyCondition)).To(Equal(infrav1.VSphereMachineNotReadyReason))
+		Expect(conditions.GetReason(supervisorMachine, infrav1.VSphereMachineReadyCondition)).To(Equal(vmwarev1.VSphereMachineHostMaintenanceReason))
 		Expect(conditions.GetReason(supervisorMachine, infrav1.VSphereMachineVirtualMachineProvisionedCondition)).To(Equal(infrav1.VSphereMachineVirtualMachineWaitingForBootstrapDataReason))
 
 		Expect(baseClient.Get(ctx, client.ObjectKeyFromObject(owner), owner)).To(Succeed())
@@ -282,6 +287,17 @@ var _ = Describe("VsphereMachineReconciler", func() {
 			Type: vmoprv1alpha5.VirtualMachinePowerStateSynced, Status: metav1.ConditionTrue, Reason: "Synced",
 		})
 		Expect(baseClient.Status().Update(ctx, vm)).To(Succeed())
+		reconcileAndRefresh()
+		Expect(conditions.IsFalse(supervisorMachine, infrav1.VSphereMachineReadyCondition)).To(BeTrue())
+		Expect(conditions.GetReason(supervisorMachine, infrav1.VSphereMachineReadyCondition)).To(Equal(vmwarev1.VSphereMachineHostMaintenanceReason))
+		Expect(conditions.Get(supervisorMachine, infrav1.VSphereMachineReadyCondition).Message).To(ContainSubstring("Waiting for the Kubernetes Node"))
+
+		Expect(baseClient.Get(ctx, client.ObjectKeyFromObject(owner), owner)).To(Succeed())
+		conditions.Set(owner, metav1.Condition{
+			Type: clusterv1.MachineNodeReadyCondition, Status: metav1.ConditionTrue,
+			Reason: clusterv1.MachineNodeReadyReason,
+		})
+		Expect(baseClient.Update(ctx, owner)).To(Succeed())
 		reconcileAndRefresh()
 		Expect(conditions.IsTrue(supervisorMachine, infrav1.VSphereMachineReadyCondition)).To(BeTrue())
 		Expect(conditions.GetReason(supervisorMachine, infrav1.VSphereMachineReadyCondition)).To(Equal(infrav1.VSphereMachineReadyReason))

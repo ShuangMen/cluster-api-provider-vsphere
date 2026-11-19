@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
 
 	infrav1 "sigs.k8s.io/cluster-api-provider-vsphere/api/govmomi/v1beta2"
@@ -93,6 +94,22 @@ func (c *SupervisorMachineContext) IsHostInMaintenance() bool {
 	condition := meta.FindStatusCondition(c.VMOperatorVM.Status.Conditions, vmoprvhub.VirtualMachinePowerStateSynced)
 	return condition != nil && condition.Status == metav1.ConditionFalse &&
 		condition.Reason == vmoprvhub.VirtualMachineInfraInMaintenanceReason
+}
+
+// IsWaitingForNodeAfterHostMaintenance reports whether a previously running machine's Node is still
+// recovering from host maintenance.
+func (c *SupervisorMachineContext) IsWaitingForNodeAfterHostMaintenance() bool {
+	if c == nil || c.VSphereMachine == nil || c.Machine == nil || !c.Machine.Status.NodeRef.IsDefined() {
+		return false
+	}
+	if !feature.Gates.Enabled(feature.HostMaintenanceMode) {
+		return false
+	}
+
+	readyCondition := meta.FindStatusCondition(c.VSphereMachine.Status.Conditions, infrav1.VSphereMachineReadyCondition)
+	return readyCondition != nil && readyCondition.Status == metav1.ConditionFalse &&
+		readyCondition.Reason == vmwarev1.VSphereMachineHostMaintenanceReason &&
+		!conditions.IsTrue(c.Machine, clusterv1.MachineNodeReadyCondition)
 }
 
 // GetObjectMeta returns the metadata for the VSphereMachine from the SupervisorMachineContext.
